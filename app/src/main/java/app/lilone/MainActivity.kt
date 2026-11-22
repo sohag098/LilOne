@@ -39,6 +39,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import app.lilone.data.Importer
+import app.lilone.data.License
+import app.lilone.ui.ActivationScreen
 import app.lilone.data.Sharing
 import app.lilone.ui.library.ImportMimeTypes
 import app.lilone.ui.library.LibraryScreen
@@ -57,6 +59,7 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         AppTheme.load(this)
+        License.load(this)
         if (savedInstanceState == null) handle(intent)
         setContent {
             val dark = AppTheme.isDark()
@@ -66,7 +69,11 @@ class MainActivity : ComponentActivity() {
                 enableEdgeToEdge(statusBarStyle = style, navigationBarStyle = style)
             }
             LilOneTheme(dark) {
-                Surface(color = MaterialTheme.colorScheme.background) { App(incoming) }
+                LaunchedEffect(Unit) { License.recheck(this@MainActivity) }
+                Surface(color = MaterialTheme.colorScheme.background) {
+                    // Files opened from other apps wait (replayed) until the app is activated
+                    if (License.unlocked) App(incoming) else ActivationScreen()
+                }
             }
         }
     }

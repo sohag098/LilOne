@@ -261,6 +261,51 @@ fun SettingsDialog(onDismiss: () -> Unit) {
                         Modifier.padding(14.dp), fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 }
+                // ---- license ----
+                Spacer(Modifier.height(24.dp))
+                Text("License", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+                Spacer(Modifier.height(8.dp))
+                val licKey = remember { app.lilone.data.License.key(context) }
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(Icons.Outlined.CheckCircle, null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(18.dp))
+                    Spacer(Modifier.width(8.dp))
+                    Text(
+                        if (licKey != null) "Activated · " + app.lilone.data.License.masked(licKey) else "Activated",
+                        fontSize = 14.sp,
+                    )
+                }
+                Spacer(Modifier.height(6.dp))
+                Text(
+                    "One key works on 2 devices. Moving to a new phone? Remove this device first to free its slot.",
+                    color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 13.sp,
+                )
+                var confirmRemove by remember { mutableStateOf(false) }
+                var removing by remember { mutableStateOf(false) }
+                var removeError by remember { mutableStateOf<String?>(null) }
+                TextButton(
+                    onClick = { confirmRemove = true }, enabled = !removing,
+                    contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 0.dp),
+                ) { Text("Remove this device", color = MaterialTheme.colorScheme.error) }
+                removeError?.let { Text(it, color = MaterialTheme.colorScheme.error, fontSize = 13.sp) }
+                if (confirmRemove) {
+                    androidx.compose.material3.AlertDialog(
+                        onDismissRequest = { confirmRemove = false },
+                        title = { Text("Remove this device?") },
+                        text = { Text("Lil One will lock on this device and its slot is freed, so you can activate another phone or tablet. Your files stay here; enter your key again to unlock.") },
+                        confirmButton = {
+                            TextButton(onClick = {
+                                confirmRemove = false; removing = true; removeError = null
+                                scope.launch {
+                                    val ok = app.lilone.data.License.removeDevice(context)
+                                    removing = false
+                                    if (ok) onDismiss() else removeError = "Couldn't reach the license server. Check your internet and try again."
+                                }
+                            }) { Text("Remove", color = MaterialTheme.colorScheme.error) }
+                        },
+                        dismissButton = { TextButton(onClick = { confirmRemove = false }) { Text("Cancel") } },
+                    )
+                }
+
                 Spacer(Modifier.height(20.dp))
                 Text("Lil One " + (runCatching { context.packageManager.getPackageInfo(context.packageName, 0).versionName }.getOrNull() ?: ""), fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 Spacer(Modifier.height(4.dp))
