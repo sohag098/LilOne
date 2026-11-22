@@ -23,6 +23,18 @@
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
+        </activity>
+
+        <!-- Files opened or shared from other apps. Standard launch mode and its own (empty) task affinity, so it
+             opens on top of the sending app and closing it returns there, e.g. to the same Telegram chat. -->
+        <activity
+            android:name=".ViewerActivity"
+            android:exported="true"
+            android:launchMode="standard"
+            android:taskAffinity=""
+            android:autoRemoveFromRecents="true"
+            android:windowSoftInputMode="adjustResize"
+            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboardHidden|density|uiMode">
             <!-- "Open with LilOne" / "Share to LilOne" from other apps -->
             <intent-filter>
                 <action android:name="android.intent.action.VIEW" />

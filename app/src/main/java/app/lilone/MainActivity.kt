@@ -52,7 +52,22 @@ import kotlinx.coroutines.launch
 /** Files handed to us by another app. [fromApp] is that app's name (e.g. "Files", "WhatsApp") when Android tells us. */
 data class Incoming(val uris: List<Uri>, val fromApp: String?)
 
-class MainActivity : ComponentActivity() {
+/** The library, started from the launcher. It lives in Lil One's own task. */
+class MainActivity : LilOneActivity()
+
+/**
+ * Files opened from other apps (Telegram, WhatsApp, Files, Gmail...). This activity sits on top of that app,
+ * in its task (or a task of its own that returns to it), so closing the reader goes straight back there.
+ * The library's MainActivity is single-task and can't do that: from Telegram it would fall back to the home screen.
+ */
+class ViewerActivity : LilOneActivity() {
+    override val viewer = true
+}
+
+abstract class LilOneActivity : ComponentActivity() {
+    /** True for [ViewerActivity]: leaving the reader finishes this screen and returns to the app the file came from. */
+    open val viewer = false
+
     /** Files handed to us by other apps ("Open with" / "Share"). */
     private val incoming = MutableSharedFlow<Incoming>(replay = 1, extraBufferCapacity = 4)
 
@@ -69,10 +84,10 @@ class MainActivity : ComponentActivity() {
                 enableEdgeToEdge(statusBarStyle = style, navigationBarStyle = style)
             }
             LilOneTheme(dark) {
-                LaunchedEffect(Unit) { License.recheck(this@MainActivity) }
+                LaunchedEffect(Unit) { License.recheck(this@LilOneActivity) }
                 Surface(color = MaterialTheme.colorScheme.background) {
                     // Files opened from other apps wait (replayed) until the app is activated
-                    if (License.unlocked) App(incoming) else ActivationScreen()
+                    if (License.unlocked) App(incoming, viewer) else ActivationScreen()
                 }
             }
         }
@@ -97,7 +112,8 @@ class MainActivity : ComponentActivity() {
 
     /** Name of the app that opened us, so the reader can offer "‹ Files" to go straight back there. */
     private fun callerName(): String? = runCatching {
-        val pkg = referrer?.takeIf { it.scheme == "android-app" }?.host
+        // callingPackage is set when the app waits for a result (Telegram does); otherwise try the referrer
+        val pkg = callingPackage ?: referrer?.takeIf { it.scheme == "android-app" }?.host
         if (pkg == null || pkg == packageName) return null
         packageManager.getApplicationLabel(packageManager.getApplicationInfo(pkg, 0)).toString().takeIf { it.isNotBlank() }
     }.getOrNull()
@@ -119,7 +135,7 @@ class MainActivity : ComponentActivity() {
 }
 
 @Composable
-private fun App(incoming: MutableSharedFlow<Incoming>) {
+private fun App(incoming: MutableSharedFlow<Incoming>, viewer: Boolean) {
     val context = LocalContext.current
     // Keeps the library's chosen folder, search and scroll while a file is open
     val saveableState = rememberSaveableStateHolder()
@@ -130,6 +146,8 @@ private fun App(incoming: MutableSharedFlow<Incoming>) {
     var backLabel by rememberSaveable { mutableStateOf("Library") }
     var fromOtherApp by rememberSaveable { mutableStateOf(false) }
     var importing by remember { mutableStateOf(false) }
+    // The viewer shows a spinner (not the library) until the incoming file has been imported
+    var viewerWaiting by rememberSaveable { mutableStateOf(viewer) }
     var importSubject by remember { mutableStateOf<String?>(null) }
     var needsConversion by remember { mutableStateOf<List<Uri>>(emptyList()) }
 
@@ -139,6 +157,7 @@ private fun App(incoming: MutableSharedFlow<Incoming>) {
             importing = true
             val r = Importer.import(context, uris, subjectId)
             importing = false
+            viewerWaiting = false
             needsConversion = r.needsConversion
             val single = (r.imported + r.alreadyHad).singleOrNull()?.takeIf { uris.size == 1 }
             when {
@@ -173,7 +192,9 @@ private fun App(incoming: MutableSharedFlow<Incoming>) {
 
     Box(Modifier.fillMaxSize()) {
         val id = openId
-        if (id == null) {
+        if (id == null && viewerWaiting) {
+            androidx.compose.material3.CircularProgressIndicator(Modifier.align(Alignment.Center))
+        } else if (id == null) {
             saveableState.SaveableStateProvider("library") {
                 LibraryScreen(
                     importing = importing,
@@ -187,14 +208,20 @@ private fun App(incoming: MutableSharedFlow<Incoming>) {
                 backLabel = backLabel,
                 fromOtherApp = fromOtherApp,
                 onBack = {
-                    openId = null
-                    if (fromOtherApp) {
-                        // Back to the file manager / chat the file was opened from. Lil One waits on its library.
-                        fromOtherApp = false
-                        (context as? android.app.Activity)?.moveTaskToBack(true)
+                    val activity = context as? android.app.Activity
+                    when {
+                        // Opened from another app: close the viewer, which lands back in that app (same chat / folder)
+                        viewer -> activity?.finish()
+                        fromOtherApp -> { openId = null; fromOtherApp = false; activity?.moveTaskToBack(true) }
+                        else -> openId = null
                     }
                 },
-                onLibrary = { fromOtherApp = false; openId = null },
+                onLibrary = {
+                    if (viewer) {
+                        context.startActivity(Intent(context, MainActivity::class.java))
+                        (context as? android.app.Activity)?.finish()
+                    } else { fromOtherApp = false; openId = null }
+                },
             )
         }
         SnackbarHost(snackbar, Modifier.align(Alignment.BottomCenter).navigationBarsPadding().padding(16.dp))
