@@ -25,6 +25,9 @@ import java.util.UUID
  * The product token is public by design (like a Gumroad product id); the buyer's key is the private part.
  */
 object License {
+    /** Personal edition for family and friends (built with -Ppersonal=true): no key needed. */
+    val personal: Boolean get() = app.lilone.BuildConfig.PERSONAL_EDITION
+
     const val PRODUCT_TOKEN = "-bdlB_4dKxg63KxM2jEeZqEz"
     const val SHOP_URL = "https://masudsohag32.supportkori.shop"
     const val SUPPORT_EMAIL = "masudsohag32@gmail.com"
@@ -79,12 +82,14 @@ object License {
 
     /** Call before the first frame: unlocks right away from the saved state (no network). */
     fun load(c: Context) {
+        if (personal) { unlocked = true; return }
         val s = read(c)
         unlocked = s != null && System.currentTimeMillis() - s.lastOk < OFFLINE_GRACE_MS
     }
 
     /** Call at startup after [load]: re-checks the key in the background when due. */
     suspend fun recheck(c: Context) {
+        if (personal) return
         val s = read(c) ?: return
         val now = System.currentTimeMillis()
         if (now - s.lastCheck < RECHECK_MS && unlocked) return

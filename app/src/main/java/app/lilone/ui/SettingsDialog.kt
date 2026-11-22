@@ -265,45 +265,53 @@ fun SettingsDialog(onDismiss: () -> Unit) {
                 Spacer(Modifier.height(24.dp))
                 Text("License", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
                 Spacer(Modifier.height(8.dp))
-                val licKey = remember { app.lilone.data.License.key(context) }
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Icon(Icons.Outlined.CheckCircle, null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(18.dp))
-                    Spacer(Modifier.width(8.dp))
+                if (app.lilone.data.License.personal) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(Icons.Outlined.CheckCircle, null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(18.dp))
+                        Spacer(Modifier.width(8.dp))
+                        Text("Personal edition · no key needed", fontSize = 14.sp)
+                    }
+                } else {
+                    val licKey = remember { app.lilone.data.License.key(context) }
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(Icons.Outlined.CheckCircle, null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(18.dp))
+                        Spacer(Modifier.width(8.dp))
+                        Text(
+                            if (licKey != null) "Activated · " + app.lilone.data.License.masked(licKey) else "Activated",
+                            fontSize = 14.sp,
+                        )
+                    }
+                    Spacer(Modifier.height(6.dp))
                     Text(
-                        if (licKey != null) "Activated · " + app.lilone.data.License.masked(licKey) else "Activated",
-                        fontSize = 14.sp,
+                        "One key works on 2 devices. Moving to a new phone? Remove this device first to free its slot.",
+                        color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 13.sp,
                     )
-                }
-                Spacer(Modifier.height(6.dp))
-                Text(
-                    "One key works on 2 devices. Moving to a new phone? Remove this device first to free its slot.",
-                    color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 13.sp,
-                )
-                var confirmRemove by remember { mutableStateOf(false) }
-                var removing by remember { mutableStateOf(false) }
-                var removeError by remember { mutableStateOf<String?>(null) }
-                TextButton(
-                    onClick = { confirmRemove = true }, enabled = !removing,
-                    contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 0.dp),
-                ) { Text("Remove this device", color = MaterialTheme.colorScheme.error) }
-                removeError?.let { Text(it, color = MaterialTheme.colorScheme.error, fontSize = 13.sp) }
-                if (confirmRemove) {
-                    androidx.compose.material3.AlertDialog(
-                        onDismissRequest = { confirmRemove = false },
-                        title = { Text("Remove this device?") },
-                        text = { Text("Lil One will lock on this device and its slot is freed, so you can activate another phone or tablet. Your files stay here; enter your key again to unlock.") },
-                        confirmButton = {
-                            TextButton(onClick = {
-                                confirmRemove = false; removing = true; removeError = null
-                                scope.launch {
-                                    val ok = app.lilone.data.License.removeDevice(context)
-                                    removing = false
-                                    if (ok) onDismiss() else removeError = "Couldn't reach the license server. Check your internet and try again."
-                                }
-                            }) { Text("Remove", color = MaterialTheme.colorScheme.error) }
-                        },
-                        dismissButton = { TextButton(onClick = { confirmRemove = false }) { Text("Cancel") } },
-                    )
+                    var confirmRemove by remember { mutableStateOf(false) }
+                    var removing by remember { mutableStateOf(false) }
+                    var removeError by remember { mutableStateOf<String?>(null) }
+                    TextButton(
+                        onClick = { confirmRemove = true }, enabled = !removing,
+                        contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 0.dp),
+                    ) { Text("Remove this device", color = MaterialTheme.colorScheme.error) }
+                    removeError?.let { Text(it, color = MaterialTheme.colorScheme.error, fontSize = 13.sp) }
+                    if (confirmRemove) {
+                        androidx.compose.material3.AlertDialog(
+                            onDismissRequest = { confirmRemove = false },
+                            title = { Text("Remove this device?") },
+                            text = { Text("Lil One will lock on this device and its slot is freed, so you can activate another phone or tablet. Your files stay here; enter your key again to unlock.") },
+                            confirmButton = {
+                                TextButton(onClick = {
+                                    confirmRemove = false; removing = true; removeError = null
+                                    scope.launch {
+                                        val ok = app.lilone.data.License.removeDevice(context)
+                                        removing = false
+                                        if (ok) onDismiss() else removeError = "Couldn't reach the license server. Check your internet and try again."
+                                    }
+                                }) { Text("Remove", color = MaterialTheme.colorScheme.error) }
+                            },
+                            dismissButton = { TextButton(onClick = { confirmRemove = false }) { Text("Cancel") } },
+                        )
+                    }
                 }
 
                 Spacer(Modifier.height(20.dp))
@@ -314,17 +322,33 @@ fun SettingsDialog(onDismiss: () -> Unit) {
                     fontSize = 13.sp, fontStyle = androidx.compose.ui.text.font.FontStyle.Italic, color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
                 Text("Developed by Masud Parvej Sohag", fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
-                Spacer(Modifier.height(8.dp))
-                Text(
-                    "Free software under the GNU Affero General Public License v3, with no warranty. " +
-                        "PDF engine: MuPDF by Artifex Software (AGPL v3).",
-                    fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-                if (app.lilone.SOURCE_URL.isNotBlank()) {
-                    TextButton(
-                        onClick = { runCatching { context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(app.lilone.SOURCE_URL))) } },
-                        contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 0.dp),
-                    ) { Text("Source code"); Spacer(Modifier.width(6.dp)); Icon(Icons.Outlined.OpenInNew, null, Modifier.size(16.dp)) }
+                // The AGPL's "Appropriate Legal Notices" (copyright, no warranty, licence, source) live behind this button
+                var showLicences by remember { mutableStateOf(false) }
+                TextButton(
+                    onClick = { showLicences = true },
+                    contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 0.dp),
+                ) { Text("Licences & source code", fontSize = 13.sp) }
+                if (showLicences) {
+                    androidx.compose.material3.AlertDialog(
+                        onDismissRequest = { showLicences = false },
+                        title = { Text("Licences") },
+                        text = {
+                            Text(
+                                "Lil One · Copyright © 2026 Masud Parvej Sohag.\n\n" +
+                                    "Lil One is licensed under the GNU Affero General Public License v3 (AGPL-3.0). " +
+                                    "It comes with no warranty. You may share and change it under that licence; " +
+                                    "the full licence text and the source code are on GitHub.\n\n" +
+                                    "PDF engine: MuPDF, Copyright © Artifex Software, Inc. (AGPL-3.0).",
+                                fontSize = 14.sp,
+                            )
+                        },
+                        confirmButton = {
+                            TextButton(onClick = {
+                                runCatching { context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(app.lilone.SOURCE_URL))) }
+                            }) { Text("Source code"); Spacer(Modifier.width(6.dp)); Icon(Icons.Outlined.OpenInNew, null, Modifier.size(16.dp)) }
+                        },
+                        dismissButton = { TextButton(onClick = { showLicences = false }) { Text("Close") } },
+                    )
                 }
                 Spacer(Modifier.height(16.dp))
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
