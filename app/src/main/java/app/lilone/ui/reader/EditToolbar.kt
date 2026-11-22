@@ -180,6 +180,9 @@ private fun SizeDot(vm: ReaderViewModel, s: Int) {
     ) {
         if (vm.tool == Tool.Text) {
             Text("A", fontSize = listOf(11, 15, 20)[s].sp, fontWeight = FontWeight.SemiBold, color = scheme.onSurface)
+        } else if (vm.tool == Tool.Underline) {
+            // a short line in the three thicknesses
+            Box(Modifier.size(width = 18.dp, height = listOf(2, 4, 7)[s].dp).clip(RoundedCornerShape(1.dp)).background(scheme.onSurface))
         } else {
             val d = listOf(5, 9, 14)[s].dp
             Box(Modifier.size(d).clip(CircleShape).background(scheme.onSurface))

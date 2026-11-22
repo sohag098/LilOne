@@ -187,10 +187,59 @@ class PdfSession private constructor(
 
     private fun finish(i: Int, a: PDFAnnotation) {
         a.update()
+        thickUnderline(a)
         pdfPage(i)?.update()
     }
 
-    suspend fun addMarkup(i: Int, kind: AnnotKind, quads: List<Quad>, color: Int, text: String) = mu {
+    /**
+     * MuPDF always draws underlines 1/16 of the text height thick and ignores any width. For the thicker sizes we
+     * store the weight on the annotation (/LilOneW) and draw the same line ourselves, just thicker. It stays a real
+     * Underline annotation (Highlights list, other PDF apps), and is redrawn after colour changes.
+     */
+    private fun thickUnderline(a: PDFAnnotation) {
+        if (a.type != PDFAnnotation.TYPE_UNDERLINE) return
+        runCatching {
+            val obj = a.getObject()
+            val weight = obj.get(UNDERLINE_WEIGHT).asFloat()
+            if (weight <= 1.01f) return
+            val qp = obj.get("QuadPoints")
+            val n = qp.size()
+            if (n < 8) return
+            val c = a.color ?: floatArrayOf(0f, 0f, 0f)
+            val sb = StringBuilder()
+            when (c.size) {
+                1 -> sb.append("${c[0]} G\n")
+                3 -> sb.append("${c[0]} ${c[1]} ${c[2]} RG\n")
+                4 -> sb.append("${c[0]} ${c[1]} ${c[2]} ${c[3]} K\n")
+            }
+            var x0 = Float.MAX_VALUE; var y0 = Float.MAX_VALUE; var x1 = -Float.MAX_VALUE; var y1 = -Float.MAX_VALUE
+            var i = 0
+            while (i + 7 < n) {
+                // PDF quad order: UL, UR, LL, LR (PDF space, y up), same as MuPDF's own underline code
+                val ulx = qp.get(i).asFloat(); val uly = qp.get(i + 1).asFloat()
+                val urx = qp.get(i + 2).asFloat(); val ury = qp.get(i + 3).asFloat()
+                val llx = qp.get(i + 4).asFloat(); val lly = qp.get(i + 5).asFloat()
+                val lrx = qp.get(i + 6).asFloat(); val lry = qp.get(i + 7).asFloat()
+                val h = hypot(ulx - llx, uly - lly)
+                val w = h / 16f * weight
+                // a bit lower than MuPDF's 1/7 so a thick line doesn't cover the letters
+                val f = (1f / 7f) - (w / h) * 0.35f
+                val ax = llx + (ulx - llx) * f; val ay = lly + (uly - lly) * f
+                val bx = lrx + (urx - lrx) * f; val by = lry + (ury - lry) * f
+                sb.append("$w w\n$ax $ay m\n$bx $by l\nS\n")
+                for (v in floatArrayOf(ulx, urx, llx, lrx)) { x0 = min(x0, v); x1 = max(x1, v) }
+                for (v in floatArrayOf(uly, ury, lly, lry)) { y0 = min(y0, v); y1 = max(y1, v) }
+                val pad = w
+                x0 -= pad; y0 -= pad; x1 += pad; y1 += pad
+                i += 8
+            }
+            val bbox = Rect(x0, y0, x1, y1)
+            obj.put("Rect", bbox) // raw PDF-space rect, same space as the appearance box
+            a.setAppearance(bbox, null, com.artifex.mupdf.fitz.Buffer().apply { writeLine(sb.toString()) })
+        }
+    }
+
+    suspend fun addMarkup(i: Int, kind: AnnotKind, quads: List<Quad>, color: Int, text: String, weight: Float = 1f) = mu {
         val p = pdfPage(i) ?: return@mu
         op(kind.name) {
             val type = when (kind) {
@@ -202,6 +251,7 @@ class PdfSession private constructor(
             a.setColor(rgb(color))
             a.setQuadPoints(quads.toTypedArray())
             if (text.isNotBlank()) a.setContents(text)
+            if (kind == AnnotKind.Underline && weight > 1.01f) a.getObject().put(UNDERLINE_WEIGHT, weight)
             finish(i, a)
         }
     }
@@ -477,6 +527,7 @@ class PdfSession private constructor(
             }
         }
 
+        const val UNDERLINE_WEIGHT = "LilOneW"
         fun rgb(c: Int) = floatArrayOf(((c shr 16) and 0xFF) / 255f, ((c shr 8) and 0xFF) / 255f, (c and 0xFF) / 255f)
 
         fun argb(f: FloatArray?): Int {

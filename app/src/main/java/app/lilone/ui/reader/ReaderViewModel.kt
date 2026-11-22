@@ -48,7 +48,7 @@ enum class Tool(val drags: Boolean, val label: String) {
     Eraser(true, "Eraser");
 
     val hasColor get() = this != Select && this != Eraser && this != AskAI
-    val hasSize get() = this == Pen || this == Marker || this == Box || this == Arrow || this == Text
+    val hasSize get() = this == Pen || this == Marker || this == Box || this == Arrow || this == Text || this == Underline
 }
 
 enum class ReadMode { Day, Sepia, Night }
@@ -106,7 +106,7 @@ class ReaderViewModel(app: Application, val docId: String) : AndroidViewModel(ap
         Tool.Pen to Palette[2], Tool.Marker to Palette[0], Tool.Text to Palette[7],
         Tool.Note to Palette[0], Tool.Box to Palette[6], Tool.Arrow to Palette[6],
     )
-    private val sizes = mutableStateMapOf(Tool.Pen to 1, Tool.Marker to 1, Tool.Box to 1, Tool.Arrow to 1, Tool.Text to 1)
+    private val sizes = mutableStateMapOf(Tool.Pen to 1, Tool.Marker to 1, Tool.Box to 1, Tool.Arrow to 1, Tool.Text to 1, Tool.Underline to 0)
     fun colorOf(t: Tool) = colors[t] ?: Palette[0]
     fun setColor(c: Int) { colors[tool] = c }
     fun sizeOf(t: Tool) = sizes[t] ?: 1
@@ -122,6 +122,8 @@ class ReaderViewModel(app: Application, val docId: String) : AndroidViewModel(ap
         else -> listOf(1f, 1.8f, 3f)[s]
     }
     fun textSize(s: Int = sizeOf(Tool.Text)) = listOf(10f, 14f, 20f)[s]
+    /** Underline thickness: thin (the standard line), medium, thick. */
+    fun underlineWeight(s: Int = sizeOf(Tool.Underline)) = listOf(1f, 2f, 3.5f)[s]
 
     // ---- live overlays (PDF point coordinates)
     var strokePage by mutableIntStateOf(-1); private set
@@ -301,7 +303,7 @@ class ReaderViewModel(app: Application, val docId: String) : AndroidViewModel(ap
                     } else {
                         val text = s.selectionText(page, a, p)
                         val kind = when (t) { Tool.Underline -> AnnotKind.Underline; Tool.Strike -> AnnotKind.Strike; else -> AnnotKind.Highlight }
-                        s.addMarkup(page, kind, quads, color, text)
+                        s.addMarkup(page, kind, quads, color, text, if (t == Tool.Underline) underlineWeight() else 1f)
                         edited(page)
                     }
                     clearOverlays()

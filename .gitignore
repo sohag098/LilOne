@@ -20,3 +20,6 @@ keystore.properties
 PRIVATE-NOTES.md
 brand/
 promo/
+
+# Personal (no-key) builds for family and friends: never published
+Personal/
