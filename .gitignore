@@ -1,0 +1,22 @@
+# Build output
+.gradle/
+.kotlin/
+build/
+*.apk
+*.aab
+
+# Machine-specific
+local.properties
+.idea/
+.DS_Store
+
+# SIGNING KEY: never publish (anyone with it could ship fake updates)
+keystore/
+keystore.properties
+*.jks
+*.keystore
+
+# Private notes, brand source files and promo material (not part of the app source)
+PRIVATE-NOTES.md
+brand/
+promo/
