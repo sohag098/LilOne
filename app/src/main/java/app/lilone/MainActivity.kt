@@ -189,7 +189,7 @@ private fun App(incoming: MutableSharedFlow<Incoming>) {
                 onBack = {
                     openId = null
                     if (fromOtherApp) {
-                        // Back to the file manager / chat she opened it from. Lil One waits on its library.
+                        // Back to the file manager / chat the file was opened from. Lil One waits on its library.
                         fromOtherApp = false
                         (context as? android.app.Activity)?.moveTaskToBack(true)
                     }

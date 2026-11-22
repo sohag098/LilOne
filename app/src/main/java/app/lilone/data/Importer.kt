@@ -30,7 +30,7 @@ data class ImportResult(
     val failed: List<String>,
     /** Office files MuPDF couldn't convert: offer to open them in another app instead. */
     val needsConversion: List<Uri>,
-    /** Files that were already in the library: ids of her existing copies (nothing new was added). */
+    /** Files that were already in the library: ids of the existing copies (nothing new was added). */
     val alreadyHad: List<String> = emptyList(),
 )
 
@@ -122,7 +122,7 @@ object Importer {
     private fun ByteArray.toHex() = joinToString("") { "%02x".format(it) }
 
     /**
-     * Her existing copy of this exact file, if she has one. Files added before v1.3 have no fingerprint,
+     * The existing copy of this exact file, if there is one. Files added before v1.3 have no fingerprint,
      * so for those we check same-named files whose PDF is still byte-identical (i.e. not annotated yet).
      */
     private fun findExisting(repo: LibraryRepo, hash: String, title: String): String? {

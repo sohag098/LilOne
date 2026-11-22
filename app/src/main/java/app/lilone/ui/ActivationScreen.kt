@@ -136,7 +136,7 @@ fun ActivationScreen() {
             }
             Spacer(Modifier.height(24.dp))
             Text(
-                "Need help? ${License.SUPPORT_EMAIL}",
+                "Developed by Masud Parvej Sohag · Need help? ${License.SUPPORT_EMAIL}",
                 color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 13.sp, textAlign = TextAlign.Center,
             )
         }

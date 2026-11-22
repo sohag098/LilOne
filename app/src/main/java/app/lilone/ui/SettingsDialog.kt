@@ -310,6 +310,12 @@ fun SettingsDialog(onDismiss: () -> Unit) {
                 Text("Lil One " + (runCatching { context.packageManager.getPackageInfo(context.packageName, 0).versionName }.getOrNull() ?: ""), fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 Spacer(Modifier.height(4.dp))
                 Text(
+                    "Made with ♥ for my little sister, and now for every student.",
+                    fontSize = 13.sp, fontStyle = androidx.compose.ui.text.font.FontStyle.Italic, color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Text("Developed by Masud Parvej Sohag", fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+                Spacer(Modifier.height(8.dp))
+                Text(
                     "Free software under the GNU Affero General Public License v3, with no warranty. " +
                         "PDF engine: MuPDF by Artifex Software (AGPL v3).",
                     fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant,

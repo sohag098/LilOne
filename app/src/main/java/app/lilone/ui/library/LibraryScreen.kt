@@ -127,7 +127,7 @@ val ImportMimeTypes = arrayOf(
 fun LibraryScreen(
     importing: Boolean,
     onImport: (subjectId: String?) -> Unit,
-    /** [from] is the folder she was looking at, so the reader's back button can name it. */
+    /** [from] is the folder that was open, so the reader's back button can name it. */
     onOpen: (id: String, from: String) -> Unit,
 ) {
     val context = LocalContext.current

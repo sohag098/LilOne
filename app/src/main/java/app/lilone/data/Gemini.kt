@@ -19,16 +19,16 @@ class GeminiError(message: String, val code: Int = 0) : Exception(message)
 object GeminiSettings {
     private fun prefs(c: Context) = c.getSharedPreferences("settings", Context.MODE_PRIVATE)
     fun key(c: Context): String = prefs(c).getString("gemini_key", "")!!.trim()
-    /** The model in use right now (for Auto/Fast it's the one last picked for her). */
+    /** The model in use right now (for Auto/Fast it's the one last picked automatically). */
     fun model(c: Context): String = prefs(c).getString("gemini_model", "")!!
     fun hasKey(c: Context) = key(c).isNotBlank()
 
-    /** Auto = newest Flash, Fast = newest Flash-Lite (both re-picked weekly), Custom = the exact model she chose. */
+    /** Auto = newest Flash, Fast = newest Flash-Lite (both re-picked weekly), Custom = the exact model the user chose. */
     const val AUTO = "auto"
     const val FAST = "fast"
     const val CUSTOM = "custom"
     fun mode(c: Context): String = prefs(c).getString("gemini_mode", null)
-        ?: if ("flash-lite" in model(c)) FAST else AUTO // older versions: keep whatever she had
+        ?: if ("flash-lite" in model(c)) FAST else AUTO // older versions: keep the earlier choice
     fun pickedAt(c: Context): Long = prefs(c).getLong("gemini_model_at", 0)
 
     fun saveModel(c: Context, model: String) =
@@ -203,7 +203,7 @@ class Gemini(private val apiKey: String, val model: String) {
 
         private val notChat = listOf("image", "tts", "live", "audio", "embed", "robotics", "computer", "gemma", "native", "learnlm", "aqa", "veo", "imagen", "thinking", "transcribe", "customtools")
 
-        /** Flash / Flash-Lite / Pro models that can chat about her notes (no codenames, image or voice models), newest first. */
+        /** Flash / Flash-Lite / Pro models that can chat about the PDF (no codenames, image or voice models), newest first. */
         fun chatModels(models: List<String>): List<String> =
             models.filter { m -> m.startsWith("gemini") && notChat.none { m.contains(it) } && ("flash" in m || "pro" in m) }
                 .sortedWith(compareByDescending<String> { ver(it) }.thenBy { it })
@@ -219,7 +219,7 @@ class Gemini(private val apiKey: String, val model: String) {
         }
 
         /**
-         * The model for her setting. Auto/Fast are re-picked once a week so she moves to newer models by herself;
+         * The model for the chosen setting. Auto/Fast are re-picked once a week so newer models are picked up automatically;
          * if that check fails (offline), the last pick keeps working.
          */
         suspend fun forSettings(context: Context, refresh: Boolean = false): Gemini {

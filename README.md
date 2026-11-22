@@ -3,6 +3,11 @@
 A clean PDF study app for Android phones and tablets: read, highlight, draw and take notes on PDFs.
 Annotations are saved inside the PDF as standard annotations, so they show up in any PDF app.
 
+Lil One started as a study app I built for my little sister, a medical student, and grew into an app
+for every student.
+
+**Developed by Masud Parvej Sohag** · © 2026
+
 ## Features
 - Subject folders, search, recent files and a "continue reading" card
 - Highlight, pen, text notes, undo; Day / Sepia / Night reading modes
@@ -23,6 +28,8 @@ The APK is in `app/build/outputs/apk/release/`. Without a `keystore.properties` 
 is unsigned; sign it with your own key (or use `./gradlew assembleDebug` to try it out).
 
 ## Licence
+Copyright © 2026 Masud Parvej Sohag.
+
 Lil One is free software: you can redistribute it and/or modify it under the terms of the
 **GNU Affero General Public License v3.0** (see [LICENSE](LICENSE)). It comes with no warranty.
 

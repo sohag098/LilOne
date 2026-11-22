@@ -45,11 +45,11 @@ data class AiMessage(
 enum class AiScope(val label: String) { Page("This page"), Chapter("This chapter"), Document("Whole PDF") }
 enum class QuizSource(val label: String) { Page("This page"), Chapter("This chapter"), Highlights("My highlights") }
 
-private const val SYSTEM = """You are the study assistant inside Lil One, a PDF study app used by a medical student.
+private const val SYSTEM = """You are the study assistant inside Lil One, a PDF study app used by students.
 - Be accurate, clear and exam-focused. Prefer short paragraphs and bullet points.
 - Use simple Markdown only: **bold**, bullet lists, numbered lists and short headings.
 - When you use the student's document, cite pages like (p. 12).
-- If the document doesn't contain the answer, say so briefly, then answer from standard medical knowledge and label that part "General knowledge".
+- If the document doesn't contain the answer, say so briefly, then answer from standard knowledge of the subject and label that part "General knowledge".
 - Explain jargon the first time you use it. Add a brief clinical example or mnemonic when it genuinely helps memory.
 - Write formulas and numbers in plain text (e.g. SV = EDV − ESV = 120 − 50 = 70 mL). Never use LaTeX or $ signs for maths.
 - Never invent page numbers. Always answer in English."""
@@ -108,7 +108,7 @@ class AiAssistant(private val vm: ReaderViewModel) {
             listOf(
                 Part.Text(
                     "On page ${page + 1} of my PDF I selected: «$t»\n\n" +
-                        "Explain it simply for a medical student, then list the key exam points. " +
+                        "Explain it simply for a student, then list the key exam points. " +
                         "Here is the rest of that page for context:\n$surrounding"
                 )
             )
