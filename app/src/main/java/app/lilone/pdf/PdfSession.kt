@@ -3,10 +3,9 @@ package app.lilone.pdf
 import android.graphics.Bitmap
 import android.graphics.PointF
 import android.graphics.RectF
-import android.text.Layout
-import android.text.StaticLayout
-import android.text.TextPaint
+import com.artifex.mupdf.fitz.Buffer
 import com.artifex.mupdf.fitz.Document
+import com.artifex.mupdf.fitz.Font
 import com.artifex.mupdf.fitz.Matrix
 import com.artifex.mupdf.fitz.Outline
 import com.artifex.mupdf.fitz.PDFAnnotation
@@ -41,13 +40,21 @@ data class History(val canUndo: Boolean, val canRedo: Boolean)
 
 enum class AnnotKind { Highlight, Underline, Strike, Ink, Text, Note, Box, Arrow, Other }
 
+/** Marks on typed text. 0 means "none". */
+data class TextMarks(val highlight: Int = 0, val underline: Int = 0, val strike: Int = 0, val underlineWeight: Float = 1f) {
+    val any get() = highlight != 0 || underline != 0 || strike != 0
+}
+
 data class AnnotInfo(
     val page: Int,
     val index: Int,
     val kind: AnnotKind,
+    /** Text: the letter colour. Note: the note's colour. Others: the annotation colour. */
     val color: Int,
     val contents: String,
     val bounds: RectF,
+    /** Only for typed text (kind == Text). */
+    val marks: TextMarks? = null,
 )
 
 /**
@@ -188,7 +195,204 @@ class PdfSession private constructor(
     private fun finish(i: Int, a: PDFAnnotation) {
         a.update()
         thickUnderline(a)
+        restyleFreeText(a)
+        noteIcon(a)
         pdfPage(i)?.update()
+    }
+
+    // ------------------------------------------------------------------ typed text and notes
+    //
+    // Typed text and sticky notes are FreeText annotations. MuPDF draws the letters; we add our own
+    // background (sticky note, highlight) and lines (underline, strike) around them. Their /Rect is the
+    // outer box, the letters sit inside it with a small padding, so marking text never moves it.
+
+    private val helv by lazy { Font("Helvetica") }
+
+    private fun advance(c: Char): Float {
+        val g = runCatching { helv.encodeCharacter(c.code) }.getOrDefault(0)
+        return if (g == 0 && c != ' ') 0.55f else runCatching { helv.advanceGlyph(g) }.getOrDefault(0.55f)
+    }
+
+    /** Line widths, wrapped exactly the way MuPDF wraps FreeText (break at spaces, keep newlines). */
+    private fun wrapLines(text: String, size: Float, maxW: Float): List<Float> {
+        val out = mutableListOf<Float>()
+        val n = text.length
+        var a = 0
+        while (a < n) {
+            var x = 0f; var space = -1; var spaceX = 0f
+            var end = n; var w = -1f
+            var k = a
+            while (k < n) {
+                val c = text[k]
+                if (c == '\n' || c == '\r') { end = k + 1; w = x; break }
+                if (c == ' ') { space = k + 1; spaceX = x }
+                x += advance(c) * size
+                if (space >= 0 && x > maxW) { end = space; w = spaceX; break }
+                k++
+            }
+            if (w < 0f) { end = n; w = x }
+            out += w
+            a = end
+        }
+        if (out.isEmpty()) out += 0f
+        return out
+    }
+
+    private fun isNoteCard(a: PDFAnnotation) =
+        a.type == PDFAnnotation.TYPE_FREE_TEXT && runCatching { a.getObject().get(NOTE_KEY).asBoolean() }.getOrDefault(false)
+
+    /** True for FreeText made (or marked) by Lil One: /Rect is the padded outer box. */
+    private fun isManaged(a: PDFAnnotation) = isNoteCard(a) ||
+        (a.type == PDFAnnotation.TYPE_FREE_TEXT && runCatching { a.getObject().get(TEXT_KEY).asBoolean() }.getOrDefault(false))
+
+    private fun pads(size: Float, note: Boolean) = if (note) NOTE_PAD to NOTE_PAD else size * 0.25f to size * 0.15f
+
+    private fun fontSize(a: PDFAnnotation) = runCatching { a.defaultAppearance?.size }.getOrNull()?.takeIf { it > 0 } ?: 12f
+
+    private fun colorKey(a: PDFAnnotation, key: String): FloatArray? = runCatching {
+        val o = a.getObject().get(key)
+        if (!o.isArray || o.size() < 3) null else floatArrayOf(o.get(0).asFloat(), o.get(1).asFloat(), o.get(2).asFloat())
+    }.getOrNull()
+
+    private fun putColorKey(a: PDFAnnotation, key: String, color: Int) {
+        val obj = a.getObject()
+        if (color == 0) { obj.delete(key); return }
+        val arr = pdf!!.newArray()
+        rgb(color).forEach { arr.push(it) }
+        obj.put(key, arr)
+    }
+
+    private fun marksOf(a: PDFAnnotation) = TextMarks(
+        highlight = colorKey(a, HL_KEY)?.let { argb(it) } ?: 0,
+        underline = colorKey(a, UL_KEY)?.let { argb(it) } ?: 0,
+        strike = colorKey(a, ST_KEY)?.let { argb(it) } ?: 0,
+        underlineWeight = runCatching { a.getObject().get(ULW_KEY).asFloat() }.getOrDefault(0f).takeIf { it > 0f } ?: 1f,
+    )
+
+    /**
+     * Outer box for typed text or a note whose top-left corner is at (x, y), kept inside the page.
+     * The letters get exactly the width MuPDF needs, so they wrap the same way it wraps them.
+     */
+    private fun textBoxRect(box: PageBox, x: Float, y: Float, text: String, size: Float, note: Boolean): Rect {
+        val (px, py) = pads(size, note)
+        val maxInner = if (note) NOTE_MAX_W else max(60f, box.x0 + box.w - x - 6f - 2 * px)
+        val natural = wrapLines(text, size, Float.MAX_VALUE).max()
+        val w = min(maxInner, max(size * 2f, natural + size * 0.3f))
+        val lines = wrapLines(text, size, w).size
+        val ow = w + 2 * px
+        val oh = lines * size * 1.2f + size * 0.25f + 2 * py
+        val ox = x.coerceIn(box.x0, max(box.x0, box.x0 + box.w - ow))
+        val oy = y.coerceIn(box.y0, max(box.y0, box.y0 + box.h - oh))
+        return Rect(ox, oy, ox + ow, oy + oh)
+    }
+
+    private fun rawRect(o: com.artifex.mupdf.fitz.PDFObject): Rect {
+        val a = o.get(0).asFloat(); val b = o.get(1).asFloat(); val c = o.get(2).asFloat(); val d = o.get(3).asFloat()
+        return Rect(min(a, c), min(b, d), max(a, c), max(b, d))
+    }
+
+    private fun fill(c: FloatArray) = "${c[0]} ${c[1]} ${c[2]} rg\n"
+
+    /** Draws the sticky note / highlight / lines for managed FreeText. MuPDF still draws the letters. */
+    private fun restyleFreeText(a: PDFAnnotation) {
+        if (!isManaged(a)) return
+        runCatching {
+            val obj = a.getObject()
+            val note = isNoteCard(a)
+            val size = fontSize(a)
+            val (px, py) = pads(size, note)
+            val outerRaw = rawRect(obj.get("Rect"))
+            val outer = a.rect
+            val noteColor = if (note) colorKey(a, HL_KEY) ?: rgb(NOTE_DEFAULT) else null
+            // let MuPDF lay out only the letters, in the inner box, with no background of its own
+            obj.delete("C")
+            a.setRect(Rect(outer.x0 + px, outer.y0 + py, outer.x1 - px, outer.y1 - py))
+            a.update()
+            val n = obj.get("AP").get("N")
+            val inner = rawRect(n.get("BBox"))
+            val letters = n.readStream()
+            val res = n.get("Resources")
+
+            val sb = StringBuilder("q\n")
+            val x0 = outerRaw.x0; val y0 = outerRaw.y0; val x1 = outerRaw.x1; val y1 = outerRaw.y1
+            if (noteColor != null) {
+                // sticky note with the bottom-right corner folded up
+                val f = NOTE_FOLD
+                val dark = noteColor.map { it * 0.78f }.toFloatArray()
+                sb.append(fill(noteColor))
+                sb.append("$x0 $y1 m $x1 $y1 l $x1 ${y0 + f} l ${x1 - f} $y0 l $x0 $y0 l h f\n")
+                sb.append(fill(dark))
+                sb.append("$x1 ${y0 + f} m ${x1 - f} ${y0 + f} l ${x1 - f} $y0 l h f\n")
+                sb.append("${dark[0]} ${dark[1]} ${dark[2]} RG 0.6 w\n")
+                sb.append("$x0 $y1 m $x1 $y1 l $x1 ${y0 + f} l ${x1 - f} $y0 l $x0 $y0 l h S\n")
+            } else {
+                val m = marksOf(a)
+                val widths = wrapLines(a.contents ?: "", size, inner.x1 - inner.x0)
+                widths.forEachIndexed { k, w ->
+                    if (w <= 0f) return@forEachIndexed
+                    val base = inner.y1 - size * 0.8f - k * size * 1.2f
+                    if (m.highlight != 0) {
+                        val hx = size * 0.12f
+                        sb.append(fill(rgb(m.highlight)))
+                        sb.append("${inner.x0 - hx} ${base - size * 0.28f} ${w + 2 * hx} ${size * 1.2f} re f\n")
+                    }
+                }
+                widths.forEachIndexed { k, w ->
+                    if (w <= 0f) return@forEachIndexed
+                    val base = inner.y1 - size * 0.8f - k * size * 1.2f
+                    if (m.underline != 0) {
+                        val t = size / 15f * m.underlineWeight
+                        sb.append(fill(rgb(m.underline)))
+                        sb.append("${inner.x0} ${base - size * 0.12f - t / 2} $w $t re f\n")
+                    }
+                    if (m.strike != 0) {
+                        val t = size / 14f
+                        sb.append(fill(rgb(m.strike)))
+                        sb.append("${inner.x0} ${base + size * 0.28f - t / 2} $w $t re f\n")
+                    }
+                }
+            }
+            sb.append("Q\n")
+            val buf = Buffer()
+            buf.writeLine(sb.toString())
+            buf.writeBytes(letters)
+            val bbox = Rect(x0, y0, x1, y1)
+            obj.put("Rect", bbox)
+            if (noteColor != null) { // other PDF apps show the note colour as the box background
+                val arr = pdf!!.newArray(); noteColor.forEach { arr.push(it) }; obj.put("C", arr)
+            }
+            a.setAppearance(bbox, res, buf)
+        }
+    }
+
+    /** A clean sticky-note icon for pinned notes (instead of MuPDF's outlined square). */
+    private fun noteIcon(a: PDFAnnotation) {
+        if (a.type != PDFAnnotation.TYPE_TEXT) return
+        runCatching {
+            val obj = a.getObject()
+            val r = rawRect(obj.get("Rect"))
+            val c = a.color?.takeIf { it.size >= 3 } ?: rgb(NOTE_DEFAULT)
+            val dark = c.map { it * 0.72f }.toFloatArray()
+            val s = min(r.x1 - r.x0, r.y1 - r.y0)
+            val x0 = r.x0 + 1; val y0 = r.y1 - s + 1; val x1 = r.x0 + s - 1; val y1 = r.y1 - 1
+            val f = s * 0.3f
+            val sb = StringBuilder("q\n")
+            sb.append(fill(c))
+            sb.append("$x0 $y1 m $x1 $y1 l $x1 ${y0 + f} l ${x1 - f} $y0 l $x0 $y0 l h f\n")
+            sb.append(fill(dark))
+            sb.append("$x1 ${y0 + f} m ${x1 - f} ${y0 + f} l ${x1 - f} $y0 l h f\n")
+            sb.append("${dark[0]} ${dark[1]} ${dark[2]} RG 0.7 w\n")
+            sb.append("$x0 $y1 m $x1 $y1 l $x1 ${y0 + f} l ${x1 - f} $y0 l $x0 $y0 l h S\n")
+            val lw = s * 0.07f
+            for (k in 1..3) {
+                val y = y1 - s * (0.25f + k * 0.15f)
+                val end = if (k == 3) x1 - f - lw else x1 - s * 0.18f
+                sb.append("${x0 + s * 0.18f} ${y - lw / 2} ${end - x0 - s * 0.18f} $lw re f\n")
+            }
+            sb.append("Q\n")
+            val buf = Buffer(); buf.writeLine(sb.toString())
+            a.setAppearance(r, null, buf)
+        }
     }
 
     /**
@@ -274,23 +478,94 @@ class PdfSession private constructor(
         val box = boxes[i]
         op("Text") {
             val a = p.createAnnotation(PDFAnnotation.TYPE_FREE_TEXT)
-            a.setRect(freeTextRect(box, x, y, text, size))
+            a.getObject().put(TEXT_KEY, true)
             a.setContents(text)
             a.setDefaultAppearance("Helv", size, rgb(color))
             a.setBorderWidth(0f)
+            a.setRect(textBoxRect(box, x, y, text, size, note = false))
             finish(i, a)
         }
     }
 
-    private fun freeTextRect(box: PageBox, x: Float, y: Float, text: String, size: Float): Rect {
-        val paint = TextPaint().apply { textSize = size; isAntiAlias = true }
-        val maxW = max(60f, box.x0 + box.w - x - 8f)
-        val natural = text.lines().maxOf { paint.measureText(it) } + size * 0.8f
-        val w = min(maxW, max(size * 3, natural))
-        val layout = StaticLayout.Builder.obtain(text, 0, text.length, paint, w.toInt().coerceAtLeast(10))
-            .setAlignment(Layout.Alignment.ALIGN_NORMAL).build()
-        val h = layout.lineCount * size * 1.25f + size * 0.6f
-        return Rect(x, y, x + w + size * 0.4f, y + h)
+    /** A sticky note on the page, showing its text. Its top-left corner is at (x, y). */
+    suspend fun addNoteCard(i: Int, x: Float, y: Float, text: String, color: Int) = mu {
+        val p = pdfPage(i) ?: return@mu
+        val box = boxes[i]
+        op("Note") {
+            val a = p.createAnnotation(PDFAnnotation.TYPE_FREE_TEXT)
+            a.getObject().put(NOTE_KEY, true)
+            putColorKey(a, HL_KEY, color)
+            a.setContents(text)
+            a.setDefaultAppearance("Helv", NOTE_SIZE, rgb(inkOn(color)))
+            a.setBorderWidth(0f)
+            a.setRect(textBoxRect(box, x, y, text, NOTE_SIZE, note = true))
+            finish(i, a)
+        }
+    }
+
+    /** Sets highlight / underline / strike on typed text. */
+    suspend fun setTextMarks(i: Int, index: Int, marks: TextMarks) = mu {
+        val p = pdfPage(i) ?: return@mu
+        val a = p.annotations?.getOrNull(index) ?: return@mu
+        if (a.type != PDFAnnotation.TYPE_FREE_TEXT || isNoteCard(a)) return@mu
+        op("Mark") {
+            if (!isManaged(a)) {
+                // text from an older version (or another app): grow the box by the padding so the letters stay put
+                val (px, py) = pads(fontSize(a), false)
+                val r = a.rect
+                a.getObject().put(TEXT_KEY, true)
+                a.setRect(Rect(r.x0 - px, r.y0 - py, r.x1 + px, r.y1 + py))
+                if (a.color != null) a.setColor(floatArrayOf())
+            }
+            putColorKey(a, HL_KEY, marks.highlight)
+            putColorKey(a, UL_KEY, marks.underline)
+            putColorKey(a, ST_KEY, marks.strike)
+            if (marks.underline != 0 && marks.underlineWeight > 1.01f) a.getObject().put(ULW_KEY, marks.underlineWeight)
+            else a.getObject().delete(ULW_KEY)
+            finish(i, a)
+        }
+    }
+
+    /** Moves typed text or a note by (dx, dy), keeping it on the page. */
+    suspend fun moveAnnot(i: Int, index: Int, dx: Float, dy: Float) = mu {
+        val p = pdfPage(i) ?: return@mu
+        val a = p.annotations?.getOrNull(index) ?: return@mu
+        val box = boxes[i]
+        val r = a.rect
+        val w = r.x1 - r.x0; val h = r.y1 - r.y0
+        val nx = (r.x0 + dx).coerceIn(box.x0, max(box.x0, box.x0 + box.w - w))
+        val ny = (r.y0 + dy).coerceIn(box.y0, max(box.y0, box.y0 + box.h - h))
+        op("Move") {
+            a.setRect(Rect(nx, ny, nx + w, ny + h))
+            finish(i, a)
+        }
+    }
+
+    /** Typed text and notes on a page: the things that can be dragged around. */
+    suspend fun movables(i: Int): List<AnnotInfo> = mu {
+        val list = pdfPage(i)?.annotations ?: return@mu emptyList()
+        list.mapIndexedNotNull { idx, a ->
+            if (a.type == PDFAnnotation.TYPE_FREE_TEXT || a.type == PDFAnnotation.TYPE_TEXT) info(i, idx, a) else null
+        }
+    }
+
+    /** The annotation drawn on its own (transparent background), [scale] pixels per point. */
+    suspend fun renderAnnot(i: Int, index: Int, scale: Float): Bitmap? = mu {
+        runCatching {
+            val a = pdfPage(i)?.annotations?.getOrNull(index) ?: return@runCatching null
+            val b = a.bounds
+            val w = ((b.x1 - b.x0) * scale).toInt().coerceIn(1, 2400)
+            val h = ((b.y1 - b.y0) * scale).toInt().coerceIn(1, 2400)
+            val bmp = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
+            val dev = AndroidDrawDevice(bmp, (b.x0 * scale).toInt(), (b.y0 * scale).toInt())
+            try {
+                a.run(dev, Matrix(scale), null)
+                dev.close()
+            } finally {
+                dev.destroy()
+            }
+            bmp
+        }.getOrNull()
     }
 
     suspend fun addNote(i: Int, x: Float, y: Float, text: String, color: Int) = mu {
@@ -376,23 +651,47 @@ class PdfSession private constructor(
         info(i, idx, a)
     }
 
+    private fun kindOf(a: PDFAnnotation) = if (isNoteCard(a)) AnnotKind.Note else kindOf(a.type)
+
     private fun info(i: Int, idx: Int, a: PDFAnnotation): AnnotInfo {
         val b = a.bounds
-        return AnnotInfo(i, idx, kindOf(a.type), argb(a.color), a.contents ?: "", RectF(b.x0, b.y0, b.x1, b.y1))
+        val bounds = RectF(b.x0, b.y0, b.x1, b.y1)
+        return when {
+            isNoteCard(a) -> AnnotInfo(i, idx, AnnotKind.Note, argb(colorKey(a, HL_KEY) ?: rgb(NOTE_DEFAULT)), a.contents ?: "", bounds)
+            a.type == PDFAnnotation.TYPE_FREE_TEXT -> {
+                val ink = runCatching { a.defaultAppearance?.color }.getOrNull()
+                AnnotInfo(i, idx, AnnotKind.Text, argb(ink ?: floatArrayOf(0f)), a.contents ?: "", bounds, marksOf(a))
+            }
+            else -> AnnotInfo(i, idx, kindOf(a.type), argb(a.color), a.contents ?: "", bounds)
+        }
     }
 
     suspend fun updateAnnot(i: Int, index: Int, contents: String?, color: Int?) = mu {
         val p = pdfPage(i) ?: return@mu
         val a = p.annotations?.getOrNull(index) ?: return@mu
         op("Edit") {
-            if (color != null) a.setColor(rgb(color))
+            val freeText = a.type == PDFAnnotation.TYPE_FREE_TEXT
+            val note = isNoteCard(a)
+            if (color != null) when {
+                note -> {
+                    putColorKey(a, HL_KEY, color)
+                    a.setDefaultAppearance("Helv", fontSize(a), rgb(inkOn(color)))
+                }
+                freeText -> a.setDefaultAppearance(a.defaultAppearance?.font ?: "Helv", fontSize(a), rgb(color))
+                else -> a.setColor(rgb(color))
+            }
             if (contents != null) {
                 a.setContents(contents)
-                if (a.type == PDFAnnotation.TYPE_FREE_TEXT) {
-                    val da = a.defaultAppearance
-                    val size = da?.size?.takeIf { it > 0 } ?: 14f
+                if (freeText) {
                     val r = a.rect
-                    a.setRect(freeTextRect(boxes[i], r.x0, r.y0, contents, size))
+                    if (isManaged(a)) {
+                        a.setRect(textBoxRect(boxes[i], r.x0, r.y0, contents, fontSize(a), note))
+                    } else {
+                        // older text: no padding around it, keep it that way
+                        val g = textBoxRect(boxes[i], r.x0, r.y0, contents, fontSize(a), false)
+                        val (px, py) = pads(fontSize(a), false)
+                        a.setRect(Rect(g.x0, g.y0, g.x1 - 2 * px, g.y1 - 2 * py))
+                    }
                 }
             }
             finish(i, a)
@@ -488,7 +787,7 @@ class PdfSession private constructor(
             val list = pdfPage(i)?.annotations ?: continue
             list.forEachIndexed { idx, a ->
                 // boxes and arrows are layout marks, not something to revise from
-                val k = kindOf(a.type)
+                val k = kindOf(a)
                 if (a.type !in ignoredTypes && k != AnnotKind.Other && k != AnnotKind.Box && k != AnnotKind.Arrow) {
                     out += info(i, idx, a)
                 }
@@ -528,6 +827,24 @@ class PdfSession private constructor(
         }
 
         const val UNDERLINE_WEIGHT = "LilOneW"
+        // keys Lil One keeps on its own FreeText annotations
+        const val TEXT_KEY = "LilOneT"
+        const val NOTE_KEY = "LilOneNote"
+        const val HL_KEY = "LilOneHL"
+        const val UL_KEY = "LilOneUL"
+        const val ULW_KEY = "LilOneULW"
+        const val ST_KEY = "LilOneST"
+        const val NOTE_SIZE = 10f
+        const val NOTE_PAD = 6f
+        const val NOTE_FOLD = 7f
+        const val NOTE_MAX_W = 170f
+        const val NOTE_DEFAULT = 0xFFFFD95A.toInt()
+
+        /** Dark letters on light colours, white on dark ones. */
+        fun inkOn(c: Int): Int {
+            val l = 0.299f * ((c shr 16) and 0xFF) + 0.587f * ((c shr 8) and 0xFF) + 0.114f * (c and 0xFF)
+            return if (l < 140f) 0xFFFFFFFF.toInt() else 0xFF222222.toInt()
+        }
         fun rgb(c: Int) = floatArrayOf(((c shr 16) and 0xFF) / 255f, ((c shr 8) and 0xFF) / 255f, (c and 0xFF) / 255f)
 
         fun argb(f: FloatArray?): Int {

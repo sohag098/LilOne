@@ -1,6 +1,7 @@
 package app.lilone.ui.reader
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
@@ -345,19 +346,43 @@ fun AnnotationDialog(vm: ReaderViewModel, a: AnnotInfo) {
                     }
                     Spacer(Modifier.height(16.dp))
                 }
-                Text("Colour", style = MaterialTheme.typography.labelLarge)
+                Text(if (a.kind == AnnotKind.Text) "Letter colour" else "Colour", style = MaterialTheme.typography.labelLarge)
                 Spacer(Modifier.height(8.dp))
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    val current = paletteIndex(a.color)
-                    Palette.forEachIndexed { i, c ->
-                        Box(
-                            Modifier
-                                .size(if (i == current) 32.dp else 28.dp)
-                                .clip(CircleShape)
-                                .background(Color(c))
-                                .clickable { vm.updateSelected(color = c) }
+                ColorRow(current = a.color) { vm.updateSelected(color = it) }
+                val marks = a.marks
+                if (a.kind == AnnotKind.Text && marks != null) {
+                    Spacer(Modifier.height(16.dp))
+                    Text("Highlight", style = MaterialTheme.typography.labelLarge)
+                    Spacer(Modifier.height(8.dp))
+                    ColorRow(current = marks.highlight, allowNone = true) {
+                        vm.updateSelectedMarks(marks.copy(highlight = it))
+                    }
+                    Spacer(Modifier.height(12.dp))
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        FilterChip(
+                            selected = marks.underline != 0,
+                            onClick = {
+                                vm.updateSelectedMarks(
+                                    if (marks.underline != 0) marks.copy(underline = 0)
+                                    else marks.copy(underline = vm.colorOf(Tool.Underline), underlineWeight = vm.underlineWeight())
+                                )
+                            },
+                            label = { Text("Underline") },
+                        )
+                        FilterChip(
+                            selected = marks.strike != 0,
+                            onClick = { vm.updateSelectedMarks(marks.copy(strike = if (marks.strike != 0) 0 else vm.colorOf(Tool.Strike))) },
+                            label = { Text("Strike") },
                         )
                     }
+                }
+                if (a.kind == AnnotKind.Text || a.kind == AnnotKind.Note) {
+                    Spacer(Modifier.height(14.dp))
+                    Text(
+                        "Tip: in edit mode, press and drag it to move it.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
                 }
             }
         },
@@ -375,6 +400,38 @@ fun AnnotationDialog(vm: ReaderViewModel, a: AnnotInfo) {
             }
         },
     )
+}
+
+/** The palette as tappable dots. [allowNone] adds a crossed-out dot that passes 0. */
+@Composable
+private fun ColorRow(current: Int, allowNone: Boolean = false, onPick: (Int) -> Unit) {
+    val sel = if (current == 0) -2 else paletteIndex(current)
+    val dot = if (allowNone) 26.dp else 28.dp
+    Row(
+        horizontalArrangement = Arrangement.spacedBy(if (allowNone) 6.dp else 8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        modifier = Modifier.horizontalScroll(rememberScrollState()),
+    ) {
+        if (allowNone) {
+            Box(
+                Modifier
+                    .size(if (sel == -2) dot + 4.dp else dot)
+                    .clip(CircleShape)
+                    .border(1.5.dp, MaterialTheme.colorScheme.outline, CircleShape)
+                    .clickable { onPick(0) },
+                contentAlignment = Alignment.Center,
+            ) { Icon(Icons.Outlined.Close, "None", Modifier.size(16.dp), tint = MaterialTheme.colorScheme.outline) }
+        }
+        Palette.forEachIndexed { i, c ->
+            Box(
+                Modifier
+                    .size(if (i == sel) dot + 4.dp else dot)
+                    .clip(CircleShape)
+                    .background(Color(c))
+                    .clickable { onPick(c) }
+            )
+        }
+    }
 }
 
 @Composable

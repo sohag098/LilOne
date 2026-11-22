@@ -23,6 +23,7 @@ import app.lilone.pdf.OutlineItem
 import app.lilone.pdf.PageBox
 import app.lilone.pdf.PdfSession
 import app.lilone.pdf.SearchHit
+import app.lilone.pdf.TextMarks
 import com.artifex.mupdf.fitz.Quad
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -135,6 +136,22 @@ class ReaderViewModel(app: Application, val docId: String) : AndroidViewModel(ap
     var shapeA by mutableStateOf(PointF()); private set
     var shapeB by mutableStateOf(PointF()); private set
 
+    // typed text under a Highlight / Underline / Strike drag (marks the typed text instead of page text)
+    var markPage by mutableIntStateOf(-1); private set
+    var markRect by mutableStateOf<RectF?>(null); private set
+    private var markTarget: AnnotInfo? = null
+
+    // typed text and notes per page, for dragging them around (refreshed whenever a page re-renders)
+    private val movables = HashMap<Int, List<AnnotInfo>>()
+    private val movablesVersion = HashMap<Int, Int>()
+    var moving by mutableStateOf<AnnotInfo?>(null); private set
+    var moveDx by mutableStateOf(0f); private set
+    var moveDy by mutableStateOf(0f); private set
+    var moveGhost by mutableStateOf<ImageBitmap?>(null); private set
+    private var moveFrom = PointF()
+    private var moveDoneVersion = Int.MAX_VALUE
+    private var moveJob: Job? = null
+
     private var downPage = -1
     private var downPt = PointF()
     private var selJob: Job? = null
@@ -210,11 +227,17 @@ class ReaderViewModel(app: Application, val docId: String) : AndroidViewModel(ap
 
     suspend fun render(i: Int, width: Int): ImageBitmap? {
         val v = version(i)
-        cache.get(i)?.let { if (it.width == width && it.version == v) return it.bitmap }
         val s = session ?: return null
+        if (movablesVersion[i] != v) {
+            movables[i] = s.movables(i)
+            movablesVersion[i] = v
+        }
+        cache.get(i)?.let { if (it.width == width && it.version == v) return it.bitmap }
         val bmp: Bitmap = s.render(i, width) ?: return null
         val r = Rendered(bmp.asImageBitmap(), width, v, bmp.byteCount)
         cache.put(i, r)
+        // a moved annotation: keep the preview until the page shows it at its new place
+        if (moving?.page == i && v >= moveDoneVersion) endMovePreview()
         return r.bitmap
     }
 
@@ -261,9 +284,15 @@ class ReaderViewModel(app: Application, val docId: String) : AndroidViewModel(ap
         activeTool = t
         downPage = page
         downPt = p
+        markTarget = null
         when (t) {
             Tool.Highlight, Tool.Underline, Tool.Strike -> {
-                selPage = page; updateSelection(page, p, p)
+                val typed = movableAt(page, p, radiusPt)?.takeIf { it.kind == AnnotKind.Text }
+                if (typed != null) {
+                    markTarget = typed; markPage = page; markRect = typed.bounds
+                } else {
+                    selPage = page; updateSelection(page, p, p)
+                }
             }
             Tool.Pen, Tool.Marker -> { stroke.clear(); stroke.add(p); strokePage = page }
             Tool.Box, Tool.Arrow, Tool.AskAI -> { shapePage = page; shapeA = p; shapeB = p }
@@ -274,7 +303,7 @@ class ReaderViewModel(app: Application, val docId: String) : AndroidViewModel(ap
 
     fun toolMove(p: PointF, radiusPt: Float) {
         when (activeTool) {
-            Tool.Highlight, Tool.Underline, Tool.Strike -> updateSelection(downPage, downPt, p)
+            Tool.Highlight, Tool.Underline, Tool.Strike -> if (markTarget == null) updateSelection(downPage, downPt, p)
             Tool.Pen, Tool.Marker -> {
                 val last = stroke.lastOrNull()
                 if (last == null || hypot(last.x - p.x, last.y - p.y) > 0.6f) stroke.add(p)
@@ -294,6 +323,12 @@ class ReaderViewModel(app: Application, val docId: String) : AndroidViewModel(ap
         val moved = hypot(p.x - downPt.x, p.y - downPt.y)
         when (t) {
             Tool.Highlight, Tool.Underline, Tool.Strike -> {
+                markTarget?.let { target ->
+                    clearOverlays()
+                    if (moved < 2f) { tap(page, p, radiusPt); return }
+                    markTypedText(target, t)
+                    return
+                }
                 if (moved < 2f) { clearOverlays(); tap(page, p, radiusPt); return }
                 val a = downPt; val color = colorOf(t)
                 viewModelScope.launch {
@@ -361,8 +396,73 @@ class ReaderViewModel(app: Application, val docId: String) : AndroidViewModel(ap
         }
     }
 
+    /** Highlight / underline / strike typed text. Doing the same mark again (same colour) removes it. */
+    private fun markTypedText(target: AnnotInfo, t: Tool) {
+        val s = session ?: return
+        val m = target.marks ?: TextMarks()
+        val c = colorOf(t)
+        val next = when (t) {
+            Tool.Highlight -> m.copy(highlight = if (m.highlight == c) 0 else c)
+            Tool.Underline -> m.copy(underline = if (m.underline == c && m.underlineWeight == underlineWeight()) 0 else c, underlineWeight = underlineWeight())
+            else -> m.copy(strike = if (m.strike == c) 0 else c)
+        }
+        viewModelScope.launch { s.setTextMarks(target.page, target.index, next); edited(target.page) }
+    }
+
+    // ------------------------------------------------------------ moving typed text and notes
+
+    /** Typed text or a note under the point (the top-most one), from what the page last showed. */
+    fun movableAt(page: Int, p: PointF, r: Float): AnnotInfo? =
+        movables[page]?.lastOrNull { a ->
+            val b = a.bounds
+            p.x >= b.left - r && p.x <= b.right + r && p.y >= b.top - r && p.y <= b.bottom + r
+        }
+
+    fun moveStart(a: AnnotInfo, p: PointF) {
+        val s = session ?: return
+        moveJob?.cancel()
+        moving = a; moveFrom = p; moveDx = 0f; moveDy = 0f; moveGhost = null
+        moveDoneVersion = Int.MAX_VALUE
+        viewModelScope.launch {
+            val bmp = s.renderAnnot(a.page, a.index, 3f)
+            if (moving == a) moveGhost = bmp?.asImageBitmap()
+        }
+    }
+
+    fun moveTo(p: PointF) {
+        val a = moving ?: return
+        val box = boxes.getOrNull(a.page) ?: return
+        val b = a.bounds
+        moveDx = (p.x - moveFrom.x).coerceIn(box.x0 - b.left, box.x0 + box.w - b.right)
+        moveDy = (p.y - moveFrom.y).coerceIn(box.y0 - b.top, box.y0 + box.h - b.bottom)
+    }
+
+    /** Returns false when it barely moved (so the caller can treat it as a tap). */
+    fun moveEnd(): Boolean {
+        val a = moving ?: return false
+        val s = session ?: return false
+        if (hypot(moveDx, moveDy) < 1.5f) { endMovePreview(); return false }
+        val dx = moveDx; val dy = moveDy
+        movables.remove(a.page); movablesVersion.remove(a.page)
+        moveDoneVersion = version(a.page) + 1
+        moveJob = viewModelScope.launch {
+            s.moveAnnot(a.page, a.index, dx, dy)
+            edited(a.page)
+            delay(1500)
+            if (moving == a) endMovePreview() // in case the page wasn't re-rendered (scrolled away)
+        }
+        return true
+    }
+
+    fun moveCancel() = endMovePreview()
+
+    private fun endMovePreview() {
+        moving = null; moveGhost = null; moveDx = 0f; moveDy = 0f
+    }
+
     private fun clearOverlays() {
         selJob?.cancel()
+        markTarget = null; markPage = -1; markRect = null
         stroke.clear(); strokePage = -1
         selQuads = emptyList(); selPage = -1
         shapePage = -1
@@ -370,11 +470,16 @@ class ReaderViewModel(app: Application, val docId: String) : AndroidViewModel(ap
 
     /** A tap on a page (finger or pen, no drag). */
     fun tap(page: Int, p: PointF, radiusPt: Float) {
+        val s = session ?: return
         if (editMode && (tool == Tool.Text || tool == Tool.Note)) {
-            textDraft = TextDraft(page, p, isNote = tool == Tool.Note)
+            // tapping existing text or a note opens it; anywhere else starts a new one
+            viewModelScope.launch {
+                val hit = s.hitTest(page, p.x, p.y, radiusPt)
+                if (hit != null && (hit.kind == AnnotKind.Text || hit.kind == AnnotKind.Note)) selected = hit
+                else textDraft = TextDraft(page, p, isNote = tool == Tool.Note)
+            }
             return
         }
-        val s = session ?: return
         viewModelScope.launch {
             val hit = s.hitTest(page, p.x, p.y, radiusPt)
             when {
@@ -389,7 +494,7 @@ class ReaderViewModel(app: Application, val docId: String) : AndroidViewModel(ap
         if (text.isBlank()) return
         val s = session ?: return
         viewModelScope.launch {
-            if (draft.isNote) s.addNote(draft.page, draft.at.x, draft.at.y, text.trim(), colorOf(Tool.Note))
+            if (draft.isNote) s.addNoteCard(draft.page, draft.at.x, draft.at.y, text.trim(), colorOf(Tool.Note))
             else s.addFreeText(draft.page, draft.at.x, draft.at.y, text.trimEnd(), textSize(), colorOf(Tool.Text))
             edited(draft.page)
         }
@@ -401,6 +506,16 @@ class ReaderViewModel(app: Application, val docId: String) : AndroidViewModel(ap
         viewModelScope.launch {
             s.updateAnnot(a.page, a.index, contents, color)
             selected = a.copy(contents = contents ?: a.contents, color = color ?: a.color)
+            edited(a.page)
+        }
+    }
+
+    fun updateSelectedMarks(marks: TextMarks) {
+        val a = selected ?: return
+        val s = session ?: return
+        viewModelScope.launch {
+            s.setTextMarks(a.page, a.index, marks)
+            selected = a.copy(marks = marks)
             edited(a.page)
         }
     }

@@ -190,7 +190,7 @@ fun PagesView(
                         if (isStylus) vm.onStylusSeen()
                         val eraserTip = down.type == PointerType.Eraser
                         val canDraw = vm.editMode && (vm.tool.drags || eraserTip) && (isStylus || !vm.stylusOnly)
-                        var mode = 0 // 0 = scroll/tap, 1 = drawing, 2 = pinch
+                        var mode = 0 // 0 = scroll/tap, 1 = drawing, 2 = pinch, 3 = moving typed text / a note
                         var lockPage = -1
                         if (canDraw) {
                             val start = hitFor(down.position)
@@ -200,6 +200,16 @@ fun PagesView(
                                 down.consume()
                                 vm.toolDown(start.first, start.second, eraserTip, radiusPt(start.first))
                             }
+                        } else if (vm.editMode && !vm.tool.drags && !eraserTip) {
+                            // Select / Text / Note: press on typed text or a note and drag to move it
+                            val start = hitFor(down.position)
+                            val target = start?.let { vm.movableAt(it.first, it.second, radiusPt(it.first)) }
+                            if (start != null && target != null) {
+                                mode = 3
+                                lockPage = start.first
+                                down.consume()
+                                vm.moveStart(target, start.second)
+                            }
                         }
                         var moved = false
                         val slop = viewConfiguration.touchSlop
@@ -208,6 +218,7 @@ fun PagesView(
                             val pressed = ev.changes.count { it.pressed }
                             if (pressed >= 2) {
                                 if (mode == 1) vm.toolCancel()
+                                if (mode == 3) vm.moveCancel()
                                 mode = 2
                                 val c = ev.calculateCentroid(useCurrent = true)
                                 if (c != Offset.Unspecified) applyZoom(ev.calculateZoom(), c, ev.calculatePan())
@@ -220,6 +231,9 @@ fun PagesView(
                                     val h = hitFor(ch.position, lockPage)
                                     if (h != null) vm.toolUp(h.second, radiusPt(lockPage)) else vm.toolCancel()
                                     ch.consume()
+                                } else if (mode == 3) {
+                                    ch.consume()
+                                    if (!vm.moveEnd()) handleTap(down.position)
                                 } else if (mode == 0 && !moved && ch.uptimeMillis - down.uptimeMillis < 450) {
                                     handleTap(down.position)
                                 }
@@ -232,6 +246,10 @@ fun PagesView(
                                     ch.consume()
                                 }
                                 2 -> ev.changes.forEach { it.consume() }
+                                3 -> {
+                                    hitFor(ch.position, lockPage)?.let { vm.moveTo(it.second) }
+                                    ch.consume()
+                                }
                                 else -> if (vm.zoom > 1.01f && moved) {
                                     vm.offsetX = (vm.offsetX + ch.positionChange().x)
                                         .coerceIn(containerW - containerW * vm.zoom, 0f)
@@ -309,6 +327,34 @@ private fun DrawScope.drawOverlays(vm: ReaderViewModel, index: Int, box: PageBox
     if (vm.selPage == index) {
         val c = Color(vm.colorOf(vm.activeTool))
         vm.selQuads.forEach { q -> drawPath(quadPath(q), c.copy(alpha = 0.4f)) }
+    }
+
+    // typed text under a Highlight / Underline / Strike drag
+    if (vm.markPage == index) vm.markRect?.let { r ->
+        drawRect(
+            Color(vm.colorOf(vm.activeTool)).copy(alpha = 0.35f),
+            topLeft = px(r.left, r.top), size = androidx.compose.ui.geometry.Size(r.width() * k, r.height() * k),
+        )
+    }
+
+    // typed text or a note being dragged: fade the original, draw it at the finger
+    vm.moving?.takeIf { it.page == index }?.let { m ->
+        val b = m.bounds
+        val sz = androidx.compose.ui.geometry.Size(b.width() * k, b.height() * k)
+        val pad = 3.dp.toPx()
+        drawRect(pagePaper(vm.readMode).copy(alpha = 0.8f), topLeft = px(b.left, b.top) - Offset(1f, 1f), size = sz.copy(sz.width + 2f, sz.height + 2f))
+        val at = px(b.left + vm.moveDx, b.top + vm.moveDy)
+        vm.moveGhost?.let { g ->
+            drawImage(
+                g, dstOffset = androidx.compose.ui.unit.IntOffset(at.x.toInt(), at.y.toInt()),
+                dstSize = androidx.compose.ui.unit.IntSize(sz.width.toInt().coerceAtLeast(1), sz.height.toInt().coerceAtLeast(1)),
+                colorFilter = pageFilter(vm.readMode),
+            )
+        }
+        drawRect(
+            Color(0xFF7A2D3A), topLeft = at - Offset(pad, pad), size = sz.copy(sz.width + 2 * pad, sz.height + 2 * pad),
+            style = Stroke(1.5.dp.toPx(), pathEffect = androidx.compose.ui.graphics.PathEffect.dashPathEffect(floatArrayOf(12f, 8f))),
+        )
     }
 
     if (vm.strokePage == index && vm.stroke.isNotEmpty()) {

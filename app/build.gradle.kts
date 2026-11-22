@@ -22,8 +22,8 @@ android {
         applicationId = "app.lilone"
         minSdk = 26
         targetSdk = 36
-        versionCode = 9
-        versionName = "1.8"
+        versionCode = 10
+        versionName = "1.9"
         buildConfigField("boolean", "PERSONAL_EDITION", personalEdition.toString())
         ndk { abiFilters += listOf("arm64-v8a", "armeabi-v7a", "x86_64") }
     }
