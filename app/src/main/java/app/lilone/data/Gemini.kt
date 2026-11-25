@@ -198,6 +198,14 @@ class Gemini(private val apiKey: String, val model: String) {
             return stableLite.maxWithOrNull(compareBy({ ver(it) }, { -it.length }))
         }
 
+        /** "gemini-3.5-flash-lite" → "Gemini 3.5 Flash-Lite" (for showing to people). */
+        fun displayName(model: String): String {
+            val parts = model.removePrefix("models/").split('-')
+            val main = parts.takeWhile { it !in listOf("preview", "exp", "latest") && !(it.length >= 2 && it.all(Char::isDigit)) }
+            val name = main.joinToString(" ") { it.replaceFirstChar(Char::uppercase) }.replace("Flash Lite", "Flash-Lite")
+            return if ("preview" in parts) "$name (preview)" else name
+        }
+
         fun pickFor(mode: String, models: List<String>): String? =
             if (mode == GeminiSettings.FAST) pickLite(models) ?: pickBest(models) else pickBest(models)
 

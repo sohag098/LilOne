@@ -5,6 +5,7 @@ import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.SystemBarStyle
@@ -47,6 +48,7 @@ import app.lilone.ui.library.LibraryScreen
 import app.lilone.ui.reader.ReaderScreen
 import app.lilone.ui.theme.LilOneTheme
 import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
 /** Files handed to us by another app. [fromApp] is that app's name (e.g. "Files", "WhatsApp") when Android tells us. */
@@ -85,12 +87,23 @@ abstract class LilOneActivity : ComponentActivity() {
             }
             LilOneTheme(dark) {
                 LaunchedEffect(Unit) { License.recheck(this@LilOneActivity) }
+                // Re-check the trial every minute, so it ends on time while the app is open
+                LaunchedEffect(Unit) { while (true) { delay(60_000); License.refresh(this@LilOneActivity) } }
                 Surface(color = MaterialTheme.colorScheme.background) {
                     // Files opened from other apps wait (replayed) until the app is activated
                     if (License.unlocked) App(incoming, viewer) else ActivationScreen()
+                    if (License.unlocked && License.showActivation) {
+                        BackHandler { License.showActivation = false }
+                        ActivationScreen(onClose = { License.showActivation = false })
+                    }
                 }
             }
         }
+    }
+
+    override fun onResume() {
+        super.onResume()
+        License.refresh(this)
     }
 
     override fun onNewIntent(intent: Intent) {

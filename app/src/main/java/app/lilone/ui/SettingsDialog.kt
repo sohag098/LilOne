@@ -27,6 +27,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.AutoAwesome
 import androidx.compose.material.icons.outlined.Bolt
 import androidx.compose.material.icons.outlined.Check
+import androidx.compose.material.icons.outlined.Timer
 import androidx.compose.material.icons.outlined.Tune
 import androidx.compose.material.icons.outlined.CheckCircle
 import androidx.compose.material.icons.outlined.ErrorOutline
@@ -47,6 +48,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -107,6 +109,11 @@ fun SettingsDialog(onDismiss: () -> Unit) {
                 checking = false
             }
         }
+    }
+
+    // Quietly load the key's model list, so the speed tip can name the real Flash-Lite model
+    LaunchedEffect(Unit) {
+        if (key.isNotBlank()) runCatching { Gemini.listModels(key.trim()) }.getOrNull()?.let { if (allModels.isEmpty()) allModels = it }
     }
 
     val keyboard = LocalSoftwareKeyboardController.current
@@ -216,12 +223,28 @@ fun SettingsDialog(onDismiss: () -> Unit) {
                 Spacer(Modifier.height(8.dp))
                 Text(
                     when (mode) {
-                        GeminiSettings.FAST -> "Uses Flash-Lite. Replies come quicker and are a little shorter. Good when the assistant feels slow."
+                        GeminiSettings.FAST -> "Uses the newest Flash-Lite model. Replies come much quicker and are a little shorter. Good when the assistant feels slow."
                         GeminiSettings.CUSTOM -> "Pick any chat model your key can use."
                         else -> "Uses the newest Flash model and keeps it up to date. Best answers. Recommended."
                     },
                     color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 14.sp,
                 )
+                if (mode != GeminiSettings.FAST) {
+                    // Speed tip: the free Flash model is often slow or busy; Flash-Lite answers much sooner
+                    val lite = allModels.takeIf { it.isNotEmpty() }?.let { Gemini.pickFor(GeminiSettings.FAST, it) }
+                    Spacer(Modifier.height(10.dp))
+                    Surface(color = MaterialTheme.colorScheme.primaryContainer, shape = RoundedCornerShape(14.dp), modifier = Modifier.fillMaxWidth()) {
+                        Row(Modifier.padding(start = 14.dp, top = 10.dp, bottom = 10.dp, end = 6.dp), verticalAlignment = Alignment.CenterVertically) {
+                            Icon(Icons.Outlined.Bolt, null, tint = MaterialTheme.colorScheme.onPrimaryContainer, modifier = Modifier.size(20.dp))
+                            Spacer(Modifier.width(10.dp))
+                            Text(
+                                "Answers feel slow? Switch to Fast. It uses " + (lite?.let { Gemini.displayName(it) } ?: "Gemini Flash-Lite") + ".",
+                                Modifier.weight(1f), fontSize = 14.sp, color = MaterialTheme.colorScheme.onPrimaryContainer,
+                            )
+                            TextButton(onClick = { mode = GeminiSettings.FAST }) { Text("Switch") }
+                        }
+                    }
+                }
                 if (mode == GeminiSettings.CUSTOM) {
                     Spacer(Modifier.height(8.dp))
                     when {
@@ -270,6 +293,22 @@ fun SettingsDialog(onDismiss: () -> Unit) {
                         Icon(Icons.Outlined.CheckCircle, null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(18.dp))
                         Spacer(Modifier.width(8.dp))
                         Text("Personal edition · no key needed", fontSize = 14.sp)
+                    }
+                } else if (!app.lilone.data.License.activated) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(Icons.Outlined.Timer, null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(18.dp))
+                        Spacer(Modifier.width(8.dp))
+                        Text("Free trial · " + (app.lilone.data.License.trialLeftText() ?: "ending"), fontSize = 14.sp)
+                    }
+                    Spacer(Modifier.height(6.dp))
+                    Text(
+                        "Everything is unlocked for 1 day. Buy Lil One to keep using it; your files and notes stay either way.",
+                        color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 13.sp,
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Button(onClick = { openShop(context) }) { Text("Buy Lil One") }
+                        OutlinedButton(onClick = { app.lilone.data.License.showActivation = true; onDismiss() }) { Text("I have a key") }
                     }
                 } else {
                     val licKey = remember { app.lilone.data.License.key(context) }

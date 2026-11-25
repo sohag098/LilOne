@@ -19,6 +19,7 @@ import java.util.UUID
  * - Activating sends the key with this install's id and uses one of the key's seats (2 devices).
  * - Every app start re-checks quietly (no seat used). A refunded or disabled key locks the app again.
  * - Offline, the last good check keeps the app unlocked for [OFFLINE_GRACE_MS].
+ * - Before buying, a free trial unlocks everything for [TRIAL_MS] from the first launch (see [trialEndsAt]).
  *
  * Everything is stored in noBackupFilesDir, so a backup restored onto another phone does not carry the
  * activation or the install id with it (that phone has to activate, using its own seat).
@@ -35,6 +36,8 @@ object License {
     private const val DEACTIVATE_URL = "https://supportkori.com/api/licenses/deactivate"
     private const val RECHECK_MS = 6L * 60 * 60 * 1000 // re-check at most every 6 hours
     private const val OFFLINE_GRACE_MS = 14L * 24 * 60 * 60 * 1000 // works 14 days without internet
+    const val TRIAL_MS = 24L * 60 * 60 * 1000 // 1-day free trial
+    private const val CLOCK_SLACK_MS = 60L * 60 * 1000 // the clock moving back more than this ends the trial
 
     sealed interface Result {
         data object Valid : Result
@@ -42,9 +45,24 @@ object License {
         data object Offline : Result
     }
 
-    /** True while the app may be used. Compose reads it, so the activation screen appears or goes away by itself. */
+    /** True while the app may be used (activated key, or a running trial). Compose reads it, so the activation screen appears or goes away by itself. */
     var unlocked by mutableStateOf(false)
         private set
+
+    /** True when unlocked by a key (or the personal edition), not just by the trial. */
+    var activated by mutableStateOf(false)
+        private set
+
+    /** When the free trial ends, while it is running and no key is active; null otherwise. */
+    var trialEndsAt by mutableStateOf<Long?>(null)
+        private set
+
+    /** True once the trial has run out (the activation screen then says so). */
+    var trialOver by mutableStateOf(false)
+        private set
+
+    /** Shows the key screen during the trial ("I have a key"), with a way back. */
+    var showActivation by mutableStateOf(false)
 
     /** Shown on the activation screen after the app locked itself (refund, disabled key, too long offline). */
     var lockMessage by mutableStateOf<String?>(null)
@@ -53,6 +71,62 @@ object License {
 
     private fun dir(c: Context) = c.applicationContext.noBackupFilesDir
     private fun stateFile(c: Context) = File(dir(c), "license.json")
+    private fun trialFile(c: Context) = File(dir(c), "trial.json")
+
+    /**
+     * Trial bookkeeping: when it started, the latest time the app saw (so turning the clock back doesn't add time),
+     * and whether it was ended early (a refunded or disabled key). Reinstalling starts a new trial; that's accepted.
+     */
+    private data class Trial(val start: Long, val lastSeen: Long, val ended: Boolean)
+
+    private fun readTrial(c: Context): Trial? = runCatching {
+        val o = JSONObject(trialFile(c).readText())
+        Trial(o.getLong("start"), o.getLong("lastSeen"), o.optBoolean("ended", false))
+    }.getOrNull()
+
+    private fun writeTrial(c: Context, t: Trial) {
+        trialFile(c).writeText(JSONObject().put("start", t.start).put("lastSeen", t.lastSeen).put("ended", t.ended).toString())
+    }
+
+    /** Starts the trial on the very first launch and returns it, updated to now. */
+    private fun trial(c: Context, now: Long): Trial {
+        val old = readTrial(c) ?: Trial(now, now, false).also { writeTrial(c, it) }
+        val wentBack = now < old.lastSeen - CLOCK_SLACK_MS || now < old.start - CLOCK_SLACK_MS
+        val t = old.copy(lastSeen = maxOf(old.lastSeen, now), ended = old.ended || wentBack)
+        if (t != old) writeTrial(c, t)
+        return t
+    }
+
+    private fun endTrial(c: Context) {
+        val now = System.currentTimeMillis()
+        val t = readTrial(c) ?: Trial(now, now, true)
+        writeTrial(c, t.copy(ended = true))
+    }
+
+    /**
+     * Works out [unlocked], [activated] and the trial from the saved state (no network).
+     * Called at start, on resume and once a minute, so the trial ends on time while the app is open.
+     */
+    fun refresh(c: Context) {
+        if (personal) { unlocked = true; activated = true; trialEndsAt = null; trialOver = false; return }
+        val now = System.currentTimeMillis()
+        val t = trial(c, now)
+        val s = read(c)
+        activated = s != null && now - s.lastOk < OFFLINE_GRACE_MS
+        val ends = t.start + TRIAL_MS
+        val trialRunning = !t.ended && now < ends
+        trialEndsAt = if (!activated && trialRunning) ends else null
+        trialOver = !activated && !trialRunning
+        unlocked = activated || trialRunning
+        if (activated) showActivation = false
+    }
+
+    /** "23 h left", "45 min left". */
+    fun trialLeftText(now: Long = System.currentTimeMillis()): String? {
+        val left = (trialEndsAt ?: return null) - now
+        val min = (left + 59_999) / 60_000
+        return if (min >= 60) "${(min + 30) / 60} h left" else "${min.coerceAtLeast(1)} min left"
+    }
 
     /** A random id for this install that stays the same across restarts (SupportKori's "instance_id"). */
     fun instanceId(c: Context): String {
@@ -81,24 +155,20 @@ object License {
     }
 
     /** Call before the first frame: unlocks right away from the saved state (no network). */
-    fun load(c: Context) {
-        if (personal) { unlocked = true; return }
-        val s = read(c)
-        unlocked = s != null && System.currentTimeMillis() - s.lastOk < OFFLINE_GRACE_MS
-    }
+    fun load(c: Context) = refresh(c)
 
     /** Call at startup after [load]: re-checks the key in the background when due. */
     suspend fun recheck(c: Context) {
         if (personal) return
         val s = read(c) ?: return
         val now = System.currentTimeMillis()
-        if (now - s.lastCheck < RECHECK_MS && unlocked) return
+        if (now - s.lastCheck < RECHECK_MS && activated) return
         when (val r = verify(s.key, c, activate = false)) {
-            Result.Valid -> { write(c, s.copy(lastOk = now, lastCheck = now)); unlocked = true }
+            Result.Valid -> { write(c, s.copy(lastOk = now, lastCheck = now)); refresh(c) }
             is Result.Invalid -> lock(c, message(r.reason))
             Result.Offline -> {
                 write(c, s.copy(lastCheck = now))
-                if (!unlocked) lockMessage = "Connect to the internet once so Lil One can check your license."
+                if (!activated) lockMessage = "Connect to the internet once so Lil One can check your license."
             }
         }
     }
@@ -111,23 +181,25 @@ object License {
             val now = System.currentTimeMillis()
             write(c, State(key, instanceId(c), now, now))
             lockMessage = null
-            unlocked = true
+            refresh(c)
         }
         return r
     }
 
     /** "Remove this device": frees the seat on SupportKori and locks the app here. Needs internet. */
     suspend fun removeDevice(c: Context): Boolean {
-        val s = read(c) ?: run { unlocked = false; return true }
+        val s = read(c) ?: run { refresh(c); return true }
         val ok = post(DEACTIVATE_URL, JSONObject().put("product_id", PRODUCT_TOKEN).put("license_key", s.key).put("instance_id", s.instanceId)) != null
-        if (ok) { write(c, null); lockMessage = null; unlocked = false }
+        if (ok) { write(c, null); lockMessage = null; refresh(c) }
         return ok
     }
 
+    /** A refunded or disabled key also ends any trial that is still running. */
     private fun lock(c: Context, msg: String) {
         write(c, null)
+        endTrial(c)
         lockMessage = msg
-        unlocked = false
+        refresh(c)
     }
 
     fun normalise(typed: String) = typed.trim().uppercase().replace(Regex("\\s+"), "")

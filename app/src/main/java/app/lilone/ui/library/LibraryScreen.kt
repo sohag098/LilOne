@@ -526,7 +526,8 @@ private fun Header(
             Spacer(Modifier.height(18.dp))
             Text(title, style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.SemiBold)
             Text(subtitle, color = MaterialTheme.colorScheme.onSurfaceVariant)
-            Spacer(Modifier.height(14.dp))
+            app.lilone.ui.TrialChip(Modifier.padding(top = 6.dp))
+            Spacer(Modifier.height(if (app.lilone.data.License.trialEndsAt != null) 6.dp else 14.dp))
             SearchField(query, onQuery, Modifier.fillMaxWidth().padding(end = 8.dp))
         }
     } else {
@@ -535,6 +536,7 @@ private fun Header(
                 Text(title, style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.SemiBold)
                 Text(subtitle, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
+            app.lilone.ui.TrialChip(Modifier.padding(end = 12.dp))
             SearchField(query, onQuery, Modifier.width(320.dp))
             Spacer(Modifier.width(6.dp))
             ThemeToggle()

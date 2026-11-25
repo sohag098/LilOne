@@ -23,12 +23,14 @@ import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.outlined.Close
 import androidx.compose.material.icons.outlined.ErrorOutline
 import androidx.compose.material.icons.outlined.Key
 import androidx.compose.material.icons.outlined.ShoppingBag
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
@@ -56,9 +58,12 @@ import app.lilone.data.License
 import app.lilone.ui.library.BrandLogo
 import kotlinx.coroutines.launch
 
-/** First screen until the app is activated with a SupportKori license key. */
+/**
+ * Key screen: shown when the trial is over (or a key stopped working), and from the trial chip ("I have a key"),
+ * where [onClose] gives a way back to the app.
+ */
 @Composable
-fun ActivationScreen() {
+fun ActivationScreen(onClose: (() -> Unit)? = null) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val keyboard = LocalSoftwareKeyboardController.current
@@ -66,6 +71,7 @@ fun ActivationScreen() {
     var busy by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
     val shown = error ?: License.lockMessage
+    val trialEnded = onClose == null && License.trialOver && License.lockMessage == null
 
     fun activate() {
         if (key.isBlank() || busy) return
@@ -92,8 +98,24 @@ fun ActivationScreen() {
         ) {
             BrandLogo(size = 72.dp, showText = false)
             Spacer(Modifier.height(20.dp))
-            Text("Activate Lil One", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold)
+            Text(
+                if (trialEnded) "Your free trial has ended" else "Activate Lil One",
+                style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold, textAlign = TextAlign.Center,
+            )
             Spacer(Modifier.height(8.dp))
+            if (trialEnded) {
+                Text(
+                    "Thanks for trying Lil One! Buy it to keep studying. Your PDFs and notes are safe on this device and will all be here.",
+                    textAlign = TextAlign.Center, color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Spacer(Modifier.height(16.dp))
+                Button(onClick = { openShop(context) }, modifier = Modifier.fillMaxWidth().height(52.dp)) {
+                    Icon(Icons.Outlined.ShoppingBag, null, Modifier.size(18.dp)); Spacer(Modifier.width(8.dp)); Text("Buy Lil One", fontWeight = FontWeight.SemiBold)
+                }
+                Spacer(Modifier.height(24.dp))
+                Text("Already bought it?", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+                Spacer(Modifier.height(4.dp))
+            }
             Text(
                 "Enter the license key from your purchase. You'll find it in your email and in your SupportKori library. One key works on 2 devices.",
                 textAlign = TextAlign.Center, color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -127,12 +149,11 @@ fun ActivationScreen() {
                 if (busy) CircularProgressIndicator(Modifier.size(22.dp), strokeWidth = 2.5.dp, color = MaterialTheme.colorScheme.onPrimary)
                 else Text("Activate", fontWeight = FontWeight.SemiBold)
             }
-            Spacer(Modifier.height(12.dp))
-            OutlinedButton(
-                onClick = { runCatching { context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(License.SHOP_URL))) } },
-                modifier = Modifier.fillMaxWidth().height(52.dp),
-            ) {
-                Icon(Icons.Outlined.ShoppingBag, null, Modifier.size(18.dp)); Spacer(Modifier.width(8.dp)); Text("Buy Lil One")
+            if (!trialEnded) {
+                Spacer(Modifier.height(12.dp))
+                OutlinedButton(onClick = { openShop(context) }, modifier = Modifier.fillMaxWidth().height(52.dp)) {
+                    Icon(Icons.Outlined.ShoppingBag, null, Modifier.size(18.dp)); Spacer(Modifier.width(8.dp)); Text("Buy Lil One")
+                }
             }
             Spacer(Modifier.height(24.dp))
             Text(
@@ -140,5 +161,15 @@ fun ActivationScreen() {
                 color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 13.sp, textAlign = TextAlign.Center,
             )
         }
+        if (onClose != null) {
+            IconButton(onClick = onClose, modifier = Modifier.align(Alignment.TopStart).padding(8.dp)) {
+                Icon(Icons.Outlined.Close, "Back to Lil One")
+            }
+        }
     }
+}
+
+/** Opens the SupportKori page where Lil One is sold. */
+fun openShop(context: android.content.Context) {
+    runCatching { context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(License.SHOP_URL))) }
 }
